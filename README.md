@@ -42,9 +42,11 @@ unattended. MarginOps was built to own that entire lifecycle, not just the model
 | Asset coverage | NSE equities, index/stock options, MCX commodity options & futures |
 | Build cadence | 146 commits over a ~6-week intensive solo build |
 | Validation methodology | In-sample / out-of-sample / walk-forward, causality-verified (zero look-ahead bias) |
+| Validation outcome | Consistently profitable out-of-sample and across walk-forward windows — not just an in-sample fit |
 
-*(Statistics describe engineering scope and scale only — no strategy performance figures are
-published here or anywhere publicly, by design.)*
+*(Statistics describe engineering scope, scale, and validation outcome only — no strategy
+performance figures, such as returns, Sharpe, profit factor, or drawdown, are published here or
+anywhere publicly, by design.)*
 
 ## High-level architecture
 
