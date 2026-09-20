@@ -1,7 +1,7 @@
 # MarginOps
 
-**A systematic multi-asset trading platform — research, backtesting, and live order execution
-across NSE equities, options, and commodity derivatives.**
+**A systematic multi-asset trading platform covering research, risk management and live order
+execution across NSE equities, options and commodity derivatives.**
 
 > This is a **public engineering overview**. The strategy itself — signal construction, feature
 > definitions, regime thresholds, tuned parameters, and instrument selection — stays in a private
@@ -11,29 +11,34 @@ across NSE equities, options, and commodity derivatives.**
 >
 > The code excerpts on this page are quoted verbatim from the private repository, with file paths
 > and line numbers, so the engineering claims here are checkable rather than asserted.
+>
+> The full published and never-published lists are in [DISCLOSURE.md](DISCLOSURE.md).
 
 ---
 
 ## Overview
 
-MarginOps is a solo-built systematic trading platform spanning the full lifecycle of a
-quantitative trading system: historical data ingestion, a causality-verified backtesting
-engine, a regime-aware decision pipeline, and a live/paper execution layer trading through a
-live brokerage API on NSE equities, index/stock options, and MCX commodity derivatives.
+MarginOps is a systematic trading platform spanning the full lifecycle of a quantitative
+trading system: historical data ingestion, a research and backtesting layer, a regime-aware
+decision pipeline, and a live/paper execution layer trading through a live brokerage API on
+NSE equities, index/stock options, and MCX commodity derivatives.
 
-It's built as a real operating system for a trading strategy, not a research notebook — with
-the infrastructure that separates "backtested well" from "safe to run unattended with real
-capital": paper/live execution parity, atomic order submission, automated broker reconciliation,
+This overview documents the execution half of that lifecycle. The research and backtesting
+half is deliberately not argued here; see [On backtesting](#on-backtesting) below.
+
+It's built as a real operating system for a trading strategy, not a research notebook, with
+the infrastructure that separates a strategy that looks good on paper from one that is safe to
+run unattended against real capital: paper/live execution parity, atomic order submission, automated broker reconciliation,
 a hard-gated live-trading switch, scheduled model retraining, and a real-time monitoring
 dashboard.
 
 ## Motivation
 
-Most public quant/trading projects stop at the backtest. The interesting — and hardest —
-engineering problems start after a strategy backtests well: proving the backtest itself isn't
-lying to you (look-ahead bias, overfitting, survivorship effects), and then building the
-execution, risk, and observability layers that let a system act on real capital safely and
-unattended. MarginOps was built to own that entire lifecycle, not just the modeling piece.
+Most public quant/trading projects stop at the backtest. The harder engineering problems start
+afterwards: building the execution, reconciliation, risk and observability layers that let a
+system act on real capital safely and unattended, and that fail in ways an operator can
+diagnose. A strategy is one component in that system. MarginOps was built to own the whole
+operating surface around it, and this overview is about that surface.
 
 ## What this system does when things go wrong
 
@@ -55,16 +60,16 @@ linked code is quoted further down.
 
 | Metric | Value |
 |---|---|
-| Codebase | ~29,400 lines of Python + TypeScript across 324 source files |
+| Codebase | 481 tracked Python files, 59,172 lines, plus a 26-component React/TypeScript dashboard |
 | Automated tests | **123 passing** across three suites (execution loop, reconciliation, risk guards, stop manager, idempotency, paper broker, allocator, backtest, data layer, margin/greeks) |
 | Historical data | Broker-verified dataset, 450+ instruments, 500K+ price bars |
 | Asset coverage | NSE equities, index/stock options, MCX commodity options & futures |
-| Build cadence | 152 commits, solo |
-| Validation methodology | In-sample / out-of-sample / walk-forward, causality-verified (zero look-ahead bias) |
+| Build cadence | 193 commits |
 
-*No strategy performance figures — returns, Sharpe, profit factor, drawdown — are published here
-or anywhere public, by design. Statistics describe engineering scope and validation methodology
-only.*
+*No strategy performance figures, meaning returns, Sharpe, profit factor or drawdown, are
+published here or anywhere public, by design. No backtest results are published either, for the
+reason given in [On backtesting](#on-backtesting). The statistics above describe engineering
+scope only.*
 
 ## Architecture
 
@@ -486,15 +491,26 @@ One module (`tests/test_regime.py`, 5 tests) cannot be collected in the current 
 — LightGBM requires `libomp`, which is absent. That is an environment gap, not a code defect, and
 it is excluded from the 123 rather than quietly counted.
 
+## On backtesting
+
+The repository contains a backtesting and research layer, and this overview makes no claim about
+its results.
+
+The engine runs a causality check of its own, which asserts that no bar of data reaches a
+decision before that bar would have been available in real time. That check flagged a look-ahead
+leak in the pipeline feeding it. The leak is not yet fixed, so every figure the backtester has
+produced so far is treated as void, and none of it is published here, on my CV, or anywhere else.
+
+That is the entire position. Validation results go up when the leak is fixed and the suite has
+been re-run end to end, and not before. The execution, reconciliation and risk machinery
+documented above is independent of that work and is what this repository is about.
+
 ## Engineering challenges
 
-- **Proving the backtest isn't lying to you.** A dedicated causality test verifies the backtest
-  engine has zero look-ahead bias, rather than assuming correctness from code review alone — a
-  bug at the engine level would produce false-optimistic results across every strategy tested
-  through it.
-- **Backtest/live parity.** Paper and live trading run the same decision code path, so "validated
-  in paper" is a genuine rehearsal of live behaviour, while paper and live analytics stay fully
-  separated so simulated activity never contaminates real reporting.
+- **Paper/live parity.** Paper and live trading run the same decision code path, so a paper
+  session is a genuine rehearsal of live behaviour rather than a separate simplified simulator.
+  Paper and live analytics stay fully separated, so simulated activity never contaminates real
+  reporting.
 - **Safe unattended execution.** Atomic bracket-order submission (entry, stop, and target as one
   unit) removes the window where a network blip could leave a position unprotected; derived order
   keys make retries safe; reconciliation continuously checks internal state against the broker's
@@ -544,4 +560,4 @@ remain private.
 
 ---
 
-Built solo by Aditya Magar. Get in touch via the contact details on my resume/LinkedIn.
+Built by Aditya Magar. Get in touch via the contact details on my CV or LinkedIn.
