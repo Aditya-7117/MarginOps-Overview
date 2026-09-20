@@ -3,8 +3,8 @@
 **A systematic multi-asset trading platform covering research, risk management and live order
 execution across NSE equities, options and commodity derivatives.**
 
-> This is a **public engineering overview**. The strategy itself — signal construction, feature
-> definitions, regime thresholds, tuned parameters, and instrument selection — stays in a private
+> This is a **public engineering overview**. The strategy itself (signal construction, feature
+> definitions, regime thresholds, tuned parameters and instrument selection) stays in a private
 > repository and is not published anywhere. Everything shown here is the *execution* system: the
 > order lifecycle, reconciliation, risk mechanisms, durability, and test infrastructure. That
 > boundary is deliberate and is drawn explicitly in the architecture diagram below.
@@ -43,7 +43,7 @@ operating surface around it, and this overview is about that surface.
 ## What this system does when things go wrong
 
 This is the part worth reading. Anyone can place an order; the engineering is in what happens
-on the bad days. Each of these is a real failure mode that was hit, diagnosed, and fixed — the
+on the bad days. Each of these is a real failure mode that was hit, diagnosed and fixed. The
 linked code is quoted further down.
 
 | Failure mode | How the system handles it |
@@ -53,7 +53,7 @@ linked code is quoted further down.
 | The user **moves or cancels a protective stop** by hand | Order-level reconciliation classifies it and adopts the broker's value, or re-arms a fresh stop if ours vanished. |
 | A long-held trailing stop **hits the exchange's modification cap** | A modify-budget manager switches from MODIFY to a cancel-and-replace handshake, resetting the broker's counter before the wall is reached. |
 | The process **crashes mid-placement** | Order keys are *derived*, not random, so the retry produces the same key and the broker recognises it as the same order instead of opening a second position. |
-| The wallet enters **margin shortfall** | A graduated ladder de-risks on day one and force-flattens by day two — well before the broker's fund-lock window. |
+| The wallet enters **margin shortfall** | A graduated ladder de-risks on day one and force-flattens by day two, before the broker's fund-lock window. |
 | **Postgres or Redis is unavailable** | The live loop degrades to a JSON ledger and keeps trading. Richer persistence is an enhancement, not a hard dependency. |
 
 ## By the numbers
@@ -150,7 +150,7 @@ flowchart TB
     class ALLOC,GATE,SHORT,WATCH,STOPMGR,RECON,ADAPTER,PAPER,LIVE,KV,REPO,API,UI,SUP open
 ```
 
-## Order lifecycle — including intervention handling
+## Order lifecycle: including intervention handling
 
 The happy path is the boring part. This shows the reconciliation and stop-management paths that
 run *before* any new order is considered.
@@ -188,7 +188,7 @@ sequenceDiagram
 
     L->>S: plan(desired_trigger)
     alt desired not above live stop
-        S-->>L: NOOP — never loosen a stop
+        S-->>L: NOOP: never loosen a stop
     else modify budget healthy
         S-->>L: MODIFY
         L->>B: modify_protective_stop(id, trigger)
@@ -239,7 +239,7 @@ generation, feature definitions, or tuned strategy parameters.
 An order key must be **derived, never random**. If the process dies between generating a key and
 the broker acknowledging the order, a random key regenerates differently on retry, the broker
 sees an unrelated order, and the position opens twice. The trade's identity is
-`(sleeve, instrument, trading day)` — dropping the day would make a re-entry weeks later collide
+`(sleeve, instrument, trading day)`. Dropping the day would make a re-entry weeks later collide
 with the original order's id.
 
 ```python
@@ -264,7 +264,7 @@ def correlation_id(sleeve: str, instrument: str, day, *, max_len: int = MAX_LEN)
 ```
 
 Brokers cap correlation-id length (30 characters here). Truncating alone would let two long
-instrument names collapse to the same key, so the digest of the *full* key is appended —
+instrument names collapse to the same key, so the digest of the *full* key is appended:
 uniqueness survives truncation and the result is still reproducible.
 
 ### 2. Order-level reconciliation classifier
@@ -273,7 +273,7 @@ uniqueness survives truncation and the result is still reproducible.
 
 The broker is the source of truth. This diffs our tracked protective stops and pending entries
 against the live order book and emits typed events. Note the distinction it draws: `TRADED` and
-`EXPIRED` are normal lifecycle, not human intervention — conflating the two would cause the
+`EXPIRED` are normal lifecycle, not human intervention. Conflating the two would cause the
 system to "correct" orders that were never touched.
 
 ```python
@@ -318,7 +318,7 @@ def reconcile_orders(system_stops: list, broker_orders: list, *, tick: float = 0
 
 An exchange caps how many times a single order may be modified. A trailing stop on a position
 held for weeks will approach that cap. This decides between re-pricing the existing order and
-cancelling/replacing it — the replace resets the broker's counter — and keeps the counter
+cancelling/replacing it (the replace resets the broker's counter) and keeps the counter
 truthful via executor callbacks so the decision is always made on real state.
 
 ```python
@@ -358,7 +358,7 @@ class StopOrderManager:
 
 A graduated response keyed to an external deadline. The broker locks funds if a shortfall
 persists; the system acts far sooner, so a shortfall never survives to that window. Pure
-function, no I/O — which is what makes it exhaustively testable.
+function with no I/O, so its inputs and outputs can be tested directly.
 
 ```python
 class ShortfallAction(Enum):
@@ -430,9 +430,9 @@ def test_repeated_fill_attempts_do_not_walk_the_stop_down():
 ## Incident post-mortem: stop-loss re-based on a favourable fill
 
 A worked example of how defects in this system get handled. Chosen because the root cause is
-conceptual rather than typographical — the code did exactly what it was written to do.
+conceptual rather than typographical. The code did exactly what it was written to do.
 
-**Severity:** risk-integrity — silent, no crash, no failed order, nothing in the logs.
+**Severity:** risk-integrity failure. It produced no crash, failed order or log warning.
 
 **Symptom.** A pending limit entry that filled intraday at a price *better* than the signal limit
 produced a position whose rupee risk was unchanged from plan, when it should have been strictly
@@ -449,7 +449,7 @@ p["cur_stop"] = p["init_stop"]
 
 Because `stop_dist` was held constant while the stop was re-anchored to a lower fill price, the
 stop slid down by exactly the amount saved on entry. The favourable fill was converted from a
-*risk reduction* into *unchanged risk at a lower entry* — silently spending the windfall on a
+*risk reduction* into *unchanged risk at a lower entry*, silently spending the windfall on a
 wider effective stop.
 
 The conceptual error: treating `stop_dist` as the invariant. The invariant is the **stop price
@@ -458,7 +458,7 @@ price we happened to get.
 
 **Fix.** Delete the re-derivation. Two lines removed, one comment added.
 
-**Regression test.** Initially none — the fix was protected only by code review, and the fill
+**Regression test.** Initially none. The fix was protected only by code review, and the fill
 path had no coverage. That gap was later closed: the fill decision was extracted into a pure
 function (`apply_intraday_fill`) with no I/O, and six tests now pin the invariant, including the
 boundary cases and an idempotence guard. Excerpt 5 above is that test.
@@ -488,7 +488,7 @@ execution loop, position/order reconciliation, risk guards, the stop-modify hand
 idempotency-key derivation, capital allocation invariants, and the paper fill simulator.
 
 One module (`tests/test_regime.py`, 5 tests) cannot be collected in the current local environment
-— LightGBM requires `libomp`, which is absent. That is an environment gap, not a code defect, and
+because LightGBM requires `libomp`, which is absent. That is an environment gap, not a code defect, and
 it is excluded from the 123 rather than quietly counted.
 
 ## On backtesting
@@ -517,12 +517,12 @@ documented above is independent of that work and is what this repository is abou
   ground truth.
 - **A hard-gated live switch.** Placement requires both a persisted arm-state *and* an explicit
   non-shadow flag. Disarmed, the system logs exactly what it *would* have placed and sends
-  nothing — so the live path can be exercised end-to-end without risk.
+  nothing, so the execution path can be exercised without submitting real orders.
 - **Graceful degradation.** The live system runs on a JSON-ledger fallback when Postgres/Redis
   aren't available.
 - **Durability that is actually configured.** The crash-recovery store runs SQLite in WAL mode
-  with `synchronous=FULL`, so a commit is on disk before the process continues — the guarantee
-  the store exists to provide, rather than the default that merely looks like it.
+  with `synchronous=FULL`, so a commit is on disk before the process continues. This explicitly
+  enables the durability setting the recovery design depends on.
 - **Multi-asset unification.** Equities, options, and commodity futures are composed under one
   capital and risk model instead of siloed sub-systems.
 
@@ -544,7 +544,7 @@ for unattended daily operation
 
 ## Future work
 
-- Property-based tests (Hypothesis) over the reconciliation and stop-manager invariants — the
+- Property-based tests (Hypothesis) over the reconciliation and stop-manager invariants. The
   current suite is table-driven, which covers the enumerated cases but not the state space
 - Extracting the broker-agnostic execution layer (reconciliation, stop-budget handshake, risk
   guards) into a standalone open-source library
