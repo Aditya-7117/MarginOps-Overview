@@ -20,6 +20,10 @@ than taken on trust.
 - The test tree, with the commands and their output
 - An honest post-mortem of a real incident
 - Code excerpts quoted verbatim, with paths and line numbers
+- Four infrastructure modules with 32 of their tests, runnable in `extract/`: order keys,
+  reconciliation, the stop-modification budget and the risk guards
+- A description of the October 2026 execution core (outbox, hash-chained journal, replay,
+  fail-closed recovery). Its source stays private
 
 ## Never published, here or anywhere
 

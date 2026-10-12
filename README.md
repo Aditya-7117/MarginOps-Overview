@@ -10,7 +10,9 @@ execution across NSE equities, options and commodity derivatives.**
 > boundary is deliberate and is drawn explicitly in the architecture diagram below.
 >
 > The code excerpts on this page are quoted verbatim from the private repository, with file paths
-> and line numbers, so the engineering claims here are checkable rather than asserted.
+> and line numbers, so the engineering claims here are checkable rather than asserted. Four of
+> those modules also run here: [`extract/`](extract/) holds them with 32 of their tests, run by CI
+> on every push.
 >
 > The full published and never-published lists are in [DISCLOSURE.md](DISCLOSURE.md).
 
@@ -20,7 +22,7 @@ execution across NSE equities, options and commodity derivatives.**
 
 MarginOps is a systematic trading platform spanning the full lifecycle of a quantitative
 trading system: historical data ingestion, a research and backtesting layer, a regime-aware
-decision pipeline, and a live/paper execution layer trading through a live brokerage API on
+decision pipeline, and a live/paper execution layer trading through Dhan's brokerage API on
 NSE equities, index/stock options, and MCX commodity derivatives.
 
 This overview documents the execution half of that lifecycle. The research and backtesting
@@ -60,16 +62,31 @@ linked code is quoted further down.
 
 | Metric | Value |
 |---|---|
-| Codebase | 481 tracked Python files, 59,172 lines, plus a 26-component React/TypeScript dashboard |
-| Automated tests | **123 passing** across three suites (execution loop, reconciliation, risk guards, stop manager, idempotency, paper broker, allocator, backtest, data layer, margin/greeks) |
+| Codebase | 474 tracked Python files, 67,727 lines (a vendored broker SDK excluded), plus a 26-component React/TypeScript dashboard |
+| Automated tests | 579 test functions across 74 modules (static count at the latest commit, 2 October 2026): execution core, reconciliation, risk guards, stop manager, idempotency, paper broker, allocator, data layer; 32 of them run in this repository's CI |
 | Historical data | Broker-verified dataset, 450+ instruments, 500K+ price bars |
 | Asset coverage | NSE equities, index/stock options, MCX commodity options & futures |
-| Build cadence | 193 commits |
+| Build cadence | 202 commits |
 
 *No strategy performance figures, meaning returns, Sharpe, profit factor or drawdown, are
 published here or anywhere public, by design. No backtest results are published either, for the
 reason given in [On backtesting](#on-backtesting). The statistics above describe engineering
 scope only.*
+
+## Run it yourself
+
+[`extract/`](extract/) holds four modules copied from the private repository with their own tests:
+deterministic order keys, reconciliation against broker truth, the stop-modification budget and the
+margin risk guards. Each file names the private path and commit it came from. The only edits are
+import paths, placeholder instrument names and comment wording.
+
+```bash
+cd extract
+python -m pip install -e ".[test]"
+python -m pytest
+```
+
+32 tests, standard library only. GitHub Actions runs them on Python 3.10 to 3.13 on every push.
 
 ## Architecture
 
@@ -87,7 +104,7 @@ flowchart TB
         SEC["SecurityMaster<br/>symbol ↔ id ↔ per-scrip leverage"]
     end
 
-    subgraph CLOSED["Decision core — not published"]
+    subgraph CLOSED["Decision core, not published"]
         SIG["Signal layer"]
         REG["Regime + stress layer"]
         SEL["Selection + ranking"]
@@ -166,7 +183,7 @@ sequenceDiagram
     participant S as StopOrderManager
     participant D as Durable store
 
-    Note over L,D: Cycle start — broker is the source of truth
+    Note over L,D: Cycle start: broker is the source of truth
 
     L->>B: positions() + order_book()
     B-->>L: broker state
@@ -206,14 +223,14 @@ sequenceDiagram
     L->>A: evaluate(candidate)
     A-->>L: AllocationDecision(approved, qty, reason)
     alt rejected
-        Note right of A: reason recorded — always auditable
+        Note right of A: reason recorded, always auditable
     else approved
         L->>G: pre_trade_ok(margin, available, insufficient)
         alt wallet cannot cover
             G-->>L: reject before placement
         else
             L->>B: place_entry (atomic entry + target + market stop)
-            L->>A: commit — later candidates see reduced budget
+            L->>A: commit, later candidates see reduced budget
             L->>D: persist position + journal ENTRY
         end
     end
@@ -222,14 +239,35 @@ sequenceDiagram
 
     L->>B: ltp(open positions)
     alt price gapped through a resting stop
-        L->>B: market_exit — book the loss, no leak
+        L->>B: market_exit: book the loss, no leak
         L->>D: journal EXIT
     end
 ```
 
+## Execution core (October 2026)
+
+In October the order path moved onto a network-free execution core shared by the paper and live
+broker adapters. Broker transports sit outside it. Its source stays private; this is the design.
+
+- **A command outbox, written before any broker call.** Every order instruction is persisted first.
+  A command found mid-dispatch or ambiguous after a restart is never resent blindly: the outbox
+  raises `ReconciliationRequired` ("may already have reached the broker; reconcile before retry").
+- **A hash-chained, append-only event journal.** Every decision, acknowledgement, fill and
+  rejection is a JSONL record carrying the SHA-256 hash of the record before it, so an edited or
+  truncated history is detected on load. A lock stops a second writer.
+- **State rebuilt by replay.** Position state is the output of a pure, deterministic reducer run over
+  the journal. Entry, protection and exit each have their own state machine (10, 8 and 5 states),
+  driven by 30 event types.
+- **Recovery that fails closed.** After a restart, each durable command is resolved against one
+  all-or-nothing snapshot of broker truth. An entry counts as placed only when exactly one broker
+  order matches its instrument identity; a duplicate, an identity drift or a quantity mismatch stays
+  unresolved rather than guessed.
+
+The core has 52 test functions of its own across 8 modules, including outbox concurrency tests.
+
 ## Code
 
-Five excerpts, quoted verbatim from the private repository. None of these touch signal
+Six excerpts, quoted verbatim from the private repository, with comment punctuation normalised. None of these touch signal
 generation, feature definitions, or tuned strategy parameters.
 
 ### 1. Idempotency key derivation
@@ -378,7 +416,7 @@ def shortfall_monitor(insufficient_balance: float, days_in_shortfall: int,
                       broker_lock_days: int = 5) -> ShortfallVerdict:
     """Decide how hard to act on a wallet shortfall. The broker locks funds if a shortfall
     persists `broker_lock_days` (~4-5). We act FAR sooner: de-risk on day 1, force-flatten
-    by day 2 — so a shortfall never survives to the lock window."""
+    by day 2, so a shortfall never survives to the lock window."""
     if insufficient_balance <= 0:
         return ShortfallVerdict(ShortfallAction.OK, False, "no-shortfall")
     # day 0/1: reduce exposure to clear it; always alert the user to top up
@@ -427,6 +465,75 @@ def test_repeated_fill_attempts_do_not_walk_the_stop_down():
     assert p["init_stop"] == stop_after_first == 95.0
 ```
 
+### 6. Capital allocation: every rejection carries a reason
+
+`live/marginops/engine/allocator.py`. This is the money-allocation core: pure, no I/O and unit-tested. Its
+docstring sets out the invariants it enforces (punctuation normalised, pod names removed):
+
+```python
+"""
+CapitalAllocator: the money-allocation core. Its ONE job: deploy capital across pods
+to maximise compounding WITHOUT ever risking a wallet shortfall or a catastrophic
+over-allocation. Built to survive 10+ years and the worst drawdown the system can
+produce. Every rule here is a survival rule.
+
+Invariants enforced (all hard):
+  1. WALLET-SHORTFALL GUARD: the sum of open-trade max-losses is RESERVED and
+     untouchable. A new trade may only consume capital beyond (buffer + Σ open max-loss).
+  2. SHARED MARGIN POOL: total own-margin used across all pods never exceeds the
+     margin cap; pods draw from one pool in priority order (caller decides order).
+  3. PER-STOCK MARGIN-AWARE SIZING: qty is bounded by the broker's actual margin for
+     that instrument (leverage) AND a per-position notional cap, so the cash required
+     from the real wallet is always correct (never a margin call).
+  4. SMOOTH COMPOUNDING: sizing is off a capital snapshot that tracks equity in BOTH
+     directions (de-risks in drawdown), frozen within a session.
+  5. DRAWDOWN CIRCUIT-BREAKER: beyond a hard DD threshold, new entries halt (risk_mult
+     -> 0); existing protective stops stay live. Survive, don't double down.
+  6. IDLE-ONLY pods may open only when utilization is below a floor.
+
+This module is PURE (no I/O, no globals) and fully unit-tested -> trustworthy.
+"""
+```
+
+The decision itself. Every path returns an `AllocationDecision` with a reason string, so a trade the
+allocator refuses is explained in the audit trail instead of silently skipped:
+
+```python
+    def evaluate(self, pod: str, stock: str, entry: float, stop_dist: float,
+                 leverage: float, risk_frac: float, idle_only: bool = False) -> AllocationDecision:
+        """Decide qty for one candidate under ALL survival invariants. Pure; call
+        `commit()` to actually reserve the margin for approved trades."""
+        # --- guards / edge cases ---
+        if entry <= 0 or stop_dist <= 0 or leverage <= 0:
+            return AllocationDecision(False, 0, 0.0, "invalid-inputs")
+        if any(p.stock == stock for p in self.open_positions):
+            return AllocationDecision(False, 0, 0.0, "already-holding-stock")
+        if self.risk_mult == 0.0:
+            return AllocationDecision(False, 0, 0.0, "dd-circuit-breaker")
+        if idle_only and self.utilization > self.idle_floor:
+            return AllocationDecision(False, 0, 0.0, "not-idle")
+
+        # --- sizing: risk-based qty, capped by per-position notional (margin-aware) ---
+        risk_budget = risk_frac * self.capital * self.risk_mult
+        max_notional = self.max_notional_frac * self.notional_ref
+        qty = int(min(risk_budget / stop_dist, max_notional / entry))
+        if qty <= 0:
+            return AllocationDecision(False, 0, 0.0, "qty-zero")
+
+        own = entry * qty / leverage
+        # --- shared-pool + shortfall guard: must fit under the margin cap ---
+        if self._used + own > self.margin_cap + 1e-6:
+            return AllocationDecision(False, 0, 0.0, "margin-cap-reached")
+
+        return AllocationDecision(True, qty, own, f"ok-{pod}")
+```
+
+The thresholds behind these checks (the size of the reserve, the notional cap, the drawdown level and the
+idle floor) are tuned values, so the dataclass fields that hold them are not quoted here. One detail the
+docstring compresses: by default the reserve is the gap-cushion buffer alone. Reserving every open
+max-loss on top is an option, off by default, because the broker already holds margin against those
+positions and counting it twice would leave capital idle.
+
 ## Incident post-mortem: stop-loss re-based on a favourable fill
 
 A worked example of how defects in this system get handled. Chosen because the root cause is
@@ -470,7 +577,9 @@ better-than-expected actual.
 
 ## Test suite
 
-Three suites, run on Python 3.14 / macOS arm64:
+The private repository holds 579 test functions across 74 modules (static count of the latest commit,
+2 October 2026). The last full run recorded here, in August 2026 on Python 3.14 / macOS arm64,
+passed all 123 tests that existed then:
 
 ```
 $ python -m pytest live/tests/
@@ -490,6 +599,9 @@ idempotency-key derivation, capital allocation invariants, and the paper fill si
 One module (`tests/test_regime.py`, 5 tests) cannot be collected in the current local environment
 because LightGBM requires `libomp`, which is absent. That is an environment gap, not a code defect, and
 it is excluded from the 123 rather than quietly counted.
+
+Thirty-two of these tests run in this repository's CI, unchanged apart from placeholder symbols:
+see [Run it yourself](#run-it-yourself).
 
 ## On backtesting
 
